@@ -25,6 +25,9 @@ export interface AiConfig {
    *  knowledge base is embedded and semantic retrieval turns on; when
    *  null, retrieval falls back to lexical full-text search. */
   embeddingsApiKey: string | null
+  /** Account-customized copy for the UPL safeguard's hand-off reply.
+   *  Null means "use the built-in default" (`DEFAULT_LEGAL_ESCALATION_MESSAGE`). */
+  legalEscalationMessage: string | null
 }
 
 /** A single conversation turn in the shape both providers accept. */

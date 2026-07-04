@@ -72,6 +72,7 @@ export async function POST(request: Request) {
         autoReplyEnabled: false,
         autoReplyMaxPerConversation: 3,
         embeddingsApiKey: null,
+        legalEscalationMessage: null,
       })
     } catch (err) {
       if (err instanceof AiError) {

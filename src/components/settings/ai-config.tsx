@@ -26,7 +26,10 @@ import {
 } from '@/components/ui/select';
 import { SettingsPanelHead } from './settings-panel-head';
 import { AiKnowledgeCard } from './ai-knowledge';
-import { AI_PROVIDER_DEFAULT_MODEL } from '@/lib/ai/defaults';
+import {
+  AI_PROVIDER_DEFAULT_MODEL,
+  DEFAULT_LEGAL_ESCALATION_MESSAGE,
+} from '@/lib/ai/defaults';
 import type { AiProvider } from '@/lib/ai/types';
 
 const MASKED_KEY = '••••••••••••••••';
@@ -61,6 +64,7 @@ export function AiConfig() {
   const [embeddingsKeyEdited, setEmbeddingsKeyEdited] = useState(false);
   const [hasStoredEmbeddingsKey, setHasStoredEmbeddingsKey] = useState(false);
   const [systemPrompt, setSystemPrompt] = useState('');
+  const [legalEscalationMessage, setLegalEscalationMessage] = useState('');
   const [isActive, setIsActive] = useState(false);
   const [autoReplyEnabled, setAutoReplyEnabled] = useState(false);
   const [maxPerConversation, setMaxPerConversation] = useState(3);
@@ -85,6 +89,7 @@ export function AiConfig() {
         setProvider(data.provider);
         setModel(data.model);
         setSystemPrompt(data.system_prompt ?? '');
+        setLegalEscalationMessage(data.legal_escalation_message ?? '');
         setIsActive(data.is_active);
         setAutoReplyEnabled(data.auto_reply_enabled);
         setMaxPerConversation(data.auto_reply_max_per_conversation ?? 3);
@@ -131,6 +136,7 @@ export function AiConfig() {
     api_key: keyPayload(),
     embeddings_api_key: embeddingsKeyPayload(),
     system_prompt: systemPrompt.trim() || null,
+    legal_escalation_message: legalEscalationMessage.trim() || null,
     is_active: isActive,
     auto_reply_enabled: autoReplyEnabled,
     auto_reply_max_per_conversation: maxPerConversation,
@@ -201,6 +207,7 @@ export function AiConfig() {
         setIsActive(false);
         setAutoReplyEnabled(false);
         setSystemPrompt('');
+        setLegalEscalationMessage('');
       } else {
         const data = await res.json();
         toast.error(data.error ?? 'Failed to remove.');
@@ -385,6 +392,27 @@ export function AiConfig() {
                 rows={5}
                 disabled={disabled}
               />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="ai-legal-escalation">
+                Legal escalation message
+              </Label>
+              <Textarea
+                id="ai-legal-escalation"
+                value={legalEscalationMessage}
+                onChange={(e) => setLegalEscalationMessage(e.target.value)}
+                placeholder={DEFAULT_LEGAL_ESCALATION_MESSAGE}
+                rows={4}
+                disabled={disabled}
+              />
+              <p className="text-xs text-muted-foreground">
+                Sent instead of a normal AI reply whenever an inbound message
+                is flagged as a possible legal question — the assistant never
+                drafts legal advice. Leave blank to use the default shown
+                above. The conversation is also tagged and your admins are
+                notified so a human can follow up.
+              </p>
             </div>
 
             <div className="flex items-center justify-between gap-4 rounded-md border border-border p-3">

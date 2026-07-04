@@ -8,6 +8,7 @@ import { verifyMetaWebhookSignature } from '@/lib/whatsapp/webhook-signature'
 import { runAutomationsForTrigger } from '@/lib/automations/engine'
 import { dispatchInboundToFlows } from '@/lib/flows/engine'
 import { dispatchInboundToAiReply } from '@/lib/ai/auto-reply'
+import { runUplSafeguard } from '@/lib/ai/upl-safeguard'
 import { dispatchWebhookEvent } from '@/lib/webhooks/deliver'
 import {
   handleTemplateWebhookChange,
@@ -666,23 +667,27 @@ async function processMessage(
     .eq('sender_type', 'customer')
   const isFirstInboundMessage = (priorCustomerMsgCount ?? 0) === 0
 
-  const { error: msgError } = await supabaseAdmin().from('messages').insert({
-    conversation_id: conversation.id,
-    sender_type: 'customer',
-    content_type: contentType,
-    content_text: contentText,
-    media_url: mediaUrl,
-    message_id: message.id,
-    status: 'delivered',
-    created_at: new Date(parseInt(message.timestamp) * 1000).toISOString(),
-    reply_to_message_id: replyToInternalId,
-    // Only populated for content_type='interactive'. Migration 010 added
-    // the column; null for every other content_type so existing inserts
-    // behave identically.
-    interactive_reply_id: interactiveReplyId,
-  })
+  const { data: insertedMessage, error: msgError } = await supabaseAdmin()
+    .from('messages')
+    .insert({
+      conversation_id: conversation.id,
+      sender_type: 'customer',
+      content_type: contentType,
+      content_text: contentText,
+      media_url: mediaUrl,
+      message_id: message.id,
+      status: 'delivered',
+      created_at: new Date(parseInt(message.timestamp) * 1000).toISOString(),
+      reply_to_message_id: replyToInternalId,
+      // Only populated for content_type='interactive'. Migration 010 added
+      // the column; null for every other content_type so existing inserts
+      // behave identically.
+      interactive_reply_id: interactiveReplyId,
+    })
+    .select('id')
+    .single()
 
-  if (msgError) {
+  if (msgError || !insertedMessage) {
     console.error('Error inserting message:', msgError)
     return
   }
@@ -790,7 +795,22 @@ async function processMessage(
   // the account has enabled it. Awaited inside `after()` (same reason as
   // the webhook dispatch below); `dispatchInboundToAiReply` owns its
   // eligibility gates + try/catch and never throws.
+  //
+  // The UPL safeguard runs first and unconditionally (it has its own,
+  // independent gate — an AI key configured, active or not) so a legal
+  // question can never reach the bot's normal reply path. It's awaited
+  // before the bot runs: if it flags the message it also flips
+  // `ai_autoreply_disabled`, which `dispatchInboundToAiReply` will then see
+  // and no-op on, on top of having already sent its own hand-off reply.
   if (!flowConsumed && !interactiveReplyId && inboundText.trim()) {
+    await runUplSafeguard({
+      accountId,
+      conversationId: conversation.id,
+      contactId: contactRecord.id,
+      configOwnerUserId,
+      messageId: insertedMessage.id,
+      text: inboundText,
+    })
     await dispatchInboundToAiReply({
       accountId,
       conversationId: conversation.id,

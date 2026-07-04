@@ -10,6 +10,9 @@ export interface ProviderArgs {
   systemPrompt: string
   messages: ChatMessage[]
   timeoutMs: number
+  /** Overrides `MAX_OUTPUT_TOKENS` — used by the UPL classifier, which
+   *  only ever needs to output one short word. */
+  maxTokens?: number
 }
 
 /** Map a fetch rejection (timeout / DNS / offline) to a typed AiError. */
