@@ -30,7 +30,7 @@ export async function GET() {
       // `api_key` is selected only to derive `has_key` — it is stripped
       // out below and never returned to the client.
       .select(
-        'provider, model, system_prompt, is_active, auto_reply_enabled, auto_reply_max_per_conversation, api_key, embeddings_api_key, legal_escalation_message',
+        'provider, model, system_prompt, is_active, auto_reply_enabled, auto_reply_max_per_conversation, api_key, embeddings_api_key, legal_escalation_message, outbound_warnings_enabled',
       )
       .eq('account_id', accountId)
       .maybeSingle()
@@ -95,6 +95,10 @@ export async function POST(request: Request) {
         : null
     const isActive = body.is_active === true
     const autoReplyEnabled = body.auto_reply_enabled === true
+    // Defaults to on — only an explicit `false` turns it off, so existing
+    // rows saved before this field existed (or a client that omits it)
+    // keep the safeguard active.
+    const outboundWarningsEnabled = body.outbound_warnings_enabled !== false
 
     let maxPer = Number(body.auto_reply_max_per_conversation)
     if (!Number.isFinite(maxPer)) maxPer = 3
@@ -153,6 +157,7 @@ export async function POST(request: Request) {
           autoReplyMaxPerConversation: maxPer,
           embeddingsApiKey: null,
           legalEscalationMessage,
+          outboundWarningsEnabled,
         })
       } catch (err) {
         if (err instanceof AiError) {
@@ -192,6 +197,7 @@ export async function POST(request: Request) {
       is_active: isActive,
       auto_reply_enabled: autoReplyEnabled,
       auto_reply_max_per_conversation: maxPer,
+      outbound_warnings_enabled: outboundWarningsEnabled,
     }
     if (rawEmbeddingsKey) {
       shared.embeddings_api_key = encrypt(rawEmbeddingsKey)

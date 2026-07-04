@@ -159,6 +159,14 @@ export const RATE_LIMITS = {
    *  key past the provider's own rate limit. 60/min ≈ three busy agents
    *  drafting flat-out. */
   aiDraftAccount: { limit: 60, windowMs: 60_000 },
+  /** Outbound UPL classification, per user. Runs once per Send click (not
+   *  per keystroke) from the Inbox composer, so 30/min comfortably covers
+   *  a busy agent while bounding spend on the account's own LLM key. */
+  aiOutboundClassify: { limit: 30, windowMs: 60_000 },
+  /** Outbound UPL classification, per account — same rationale as
+   *  `aiDraftAccount`: caps the whole team's spend on the shared BYO key
+   *  regardless of how many agents are sending at once. */
+  aiOutboundClassifyAccount: { limit: 90, windowMs: 60_000 },
 } as const;
 
 /** Test-only helper. Clears the in-memory state so unit tests don't

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { classifyUplRisk } from './upl-classifier'
+import { classifyOutboundUplRisk, classifyUplRisk } from './upl-classifier'
 import type { AiConfig } from './types'
 
 function config(overrides: Partial<AiConfig> = {}): AiConfig {
@@ -13,6 +13,7 @@ function config(overrides: Partial<AiConfig> = {}): AiConfig {
     autoReplyMaxPerConversation: 3,
     embeddingsApiKey: null,
     legalEscalationMessage: null,
+    outboundWarningsEnabled: true,
     ...overrides,
   }
 }
@@ -91,6 +92,65 @@ describe('classifyUplRisk', () => {
       } as unknown as Response),
     )
     const result = await classifyUplRisk(config(), 'hi', [])
+    expect(result).toBe('legal_question')
+  })
+})
+
+describe('classifyOutboundUplRisk', () => {
+  it('classifies a clean "general_question" agent draft', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        okResponse({ content: [{ type: 'text', text: 'general_question' }] }),
+      ),
+    )
+    const result = await classifyOutboundUplRisk(config(), 'Sure, we can reschedule for Tuesday.')
+    expect(result).toBe('general_question')
+  })
+
+  it('classifies an agent draft that promises a case outcome as "legal_question"', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        okResponse({ content: [{ type: 'text', text: 'legal_question' }] }),
+      ),
+    )
+    const result = await classifyOutboundUplRisk(
+      config(),
+      "Don't worry, your asylum case is guaranteed to be approved.",
+    )
+    expect(result).toBe('legal_question')
+  })
+
+  it('sends only the draft text as the message to classify, not conversation context', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(
+        okResponse({ content: [{ type: 'text', text: 'general_question' }] }),
+      )
+    vi.stubGlobal('fetch', fetchMock)
+
+    await classifyOutboundUplRisk(config(), 'Here is the price list.')
+
+    const [, opts] = fetchMock.mock.calls[0]
+    const body = JSON.parse(opts.body as string)
+    expect(body.messages).toEqual([{ role: 'user', content: 'Here is the price list.' }])
+  })
+
+  it('fails closed to legal_question on ambiguous output', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        okResponse({ content: [{ type: 'text', text: 'unclear' }] }),
+      ),
+    )
+    const result = await classifyOutboundUplRisk(config(), 'hi')
+    expect(result).toBe('legal_question')
+  })
+
+  it('fails closed to legal_question on a provider error', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('network down')))
+    const result = await classifyOutboundUplRisk(config(), 'hi')
     expect(result).toBe('legal_question')
   })
 })

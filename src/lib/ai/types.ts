@@ -28,6 +28,10 @@ export interface AiConfig {
   /** Account-customized copy for the UPL safeguard's hand-off reply.
    *  Null means "use the built-in default" (`DEFAULT_LEGAL_ESCALATION_MESSAGE`). */
   legalEscalationMessage: string | null
+  /** Per-account kill switch for the OUTBOUND UPL safeguard (human-typed
+   *  Inbox messages) — independent of `isActive`/`autoReplyEnabled`, which
+   *  gate the AI assistant itself. Defaults to true. */
+  outboundWarningsEnabled: boolean
 }
 
 /** A single conversation turn in the shape both providers accept. */

@@ -68,6 +68,7 @@ export function AiConfig() {
   const [isActive, setIsActive] = useState(false);
   const [autoReplyEnabled, setAutoReplyEnabled] = useState(false);
   const [maxPerConversation, setMaxPerConversation] = useState(3);
+  const [outboundWarningsEnabled, setOutboundWarningsEnabled] = useState(true);
 
   // Guard keyed on the account (not a bare boolean) so an in-place
   // account switch — ownership transfer, multi-account membership —
@@ -93,6 +94,7 @@ export function AiConfig() {
         setIsActive(data.is_active);
         setAutoReplyEnabled(data.auto_reply_enabled);
         setMaxPerConversation(data.auto_reply_max_per_conversation ?? 3);
+        setOutboundWarningsEnabled(data.outbound_warnings_enabled !== false);
         setHasStoredKey(Boolean(data.has_key));
         setApiKey(data.has_key ? MASKED_KEY : '');
         setKeyEdited(false);
@@ -140,6 +142,7 @@ export function AiConfig() {
     is_active: isActive,
     auto_reply_enabled: autoReplyEnabled,
     auto_reply_max_per_conversation: maxPerConversation,
+    outbound_warnings_enabled: outboundWarningsEnabled,
   });
 
   const handleTest = async () => {
@@ -206,6 +209,7 @@ export function AiConfig() {
         setKeyEdited(false);
         setIsActive(false);
         setAutoReplyEnabled(false);
+        setOutboundWarningsEnabled(true);
         setSystemPrompt('');
         setLegalEscalationMessage('');
       } else {
@@ -413,6 +417,26 @@ export function AiConfig() {
                 above. The conversation is also tagged and your admins are
                 notified so a human can follow up.
               </p>
+            </div>
+
+            <div className="flex items-center justify-between gap-4 rounded-md border border-border p-3">
+              <div>
+                <p className="text-sm font-medium text-foreground">
+                  Enable outbound message warnings
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  Warns an agent before sending a hand-typed Inbox message
+                  that reads as legal advice or a promised case outcome —
+                  they can edit it or send anyway. Independent of the AI
+                  assistant switches below: this covers messages agents type
+                  themselves, not the assistant&apos;s replies.
+                </p>
+              </div>
+              <Switch
+                checked={outboundWarningsEnabled}
+                onCheckedChange={setOutboundWarningsEnabled}
+                disabled={disabled}
+              />
             </div>
 
             <div className="flex items-center justify-between gap-4 rounded-md border border-border p-3">

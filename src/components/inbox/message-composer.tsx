@@ -19,6 +19,7 @@ import {
   X,
   Loader2,
   Sparkles,
+  AlertTriangle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { GatedButton } from "@/components/ui/gated-button";
@@ -28,6 +29,14 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { useCan } from "@/hooks/use-can";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
@@ -126,6 +135,32 @@ export function MessageComposer({
   const [drafting, setDrafting] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
+  // UPL (Unauthorized Practice of Law) outbound safeguard — set to the
+  // pending draft text once it's been classified as risky, opening the
+  // warning dialog. `null` means no warning is showing.
+  const [uplWarningText, setUplWarningText] = useState<string | null>(null);
+  // Account-level kill switch (Settings → AI Agents → "Enable outbound
+  // message warnings"). Defaults to on so the safeguard is active before
+  // this loads; fetched once per composer mount (it doesn't change
+  // mid-session, and the composer persists across conversation switches)
+  // so a disabled account skips the classify call with zero added
+  // latency rather than calling it just to discard the result.
+  const [outboundWarningsEnabled, setOutboundWarningsEnabled] = useState(true);
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/ai/config")
+      .then((res) => res.json())
+      .then((data) => {
+        if (!cancelled && data?.configured) {
+          setOutboundWarningsEnabled(data.outbound_warnings_enabled !== false);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // Media attachment state. `draft` holds an uploaded-but-not-yet-sent
   // attachment; `busy` covers the upload/transcode window.
   const [draft, setDraft] = useState<MediaDraft | null>(null);
@@ -191,21 +226,94 @@ export function MessageComposer({
     el.style.height = `${Math.min(el.scrollHeight, 96)}px`;
   }, []);
 
+  // Actually dispatch the message + reset the composer. Shared by the
+  // direct send path and the "Send anyway" branch of the UPL warning.
+  const performSend = useCallback(
+    (sendText: string) => {
+      onSend(sendText, replyTo?.id);
+      setText("");
+      if (textareaRef.current) {
+        textareaRef.current.style.height = "auto";
+      }
+    },
+    [onSend, replyTo?.id]
+  );
+
+  // Classify a human agent's outgoing draft for UPL risk before it goes
+  // out — runs once per Send click, never per keystroke. Fails closed
+  // (returns true, i.e. "show the warning") on any network/server error,
+  // same conservative posture as the classifier itself: a false positive
+  // is far cheaper than letting a flagged message go out unreviewed.
+  const checkOutboundUpl = useCallback(
+    async (draftText: string): Promise<boolean> => {
+      try {
+        const res = await fetch("/api/ai/classify-outbound", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ conversation_id: conversationId, text: draftText }),
+        });
+        if (!res.ok) return true;
+        const data = await res.json().catch(() => null);
+        return data?.classification === "legal_question";
+      } catch {
+        return true;
+      }
+    },
+    [conversationId]
+  );
+
+  // Best-effort audit log of the agent's decision once the warning was
+  // shown. Fire-and-forget — never blocks the send/edit flow on a
+  // logging failure.
+  const logUplDecision = useCallback(
+    (decision: "sent_anyway" | "edited", messageText: string) => {
+      void fetch("/api/ai/log-outbound-warning", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          conversation_id: conversationId,
+          text: messageText,
+          decision,
+        }),
+      }).catch((err) => console.error("Failed to log UPL warning decision:", err));
+    },
+    [conversationId]
+  );
+
   const handleSend = useCallback(async () => {
     const trimmed = text.trim();
     if (!trimmed || sending || sessionExpired) return;
 
     setSending(true);
     try {
-      onSend(trimmed, replyTo?.id);
-      setText("");
-      if (textareaRef.current) {
-        textareaRef.current.style.height = "auto";
+      if (outboundWarningsEnabled) {
+        const flagged = await checkOutboundUpl(trimmed);
+        if (flagged) {
+          setUplWarningText(trimmed);
+          return;
+        }
       }
+      performSend(trimmed);
     } finally {
       setSending(false);
     }
-  }, [text, sending, sessionExpired, onSend, replyTo?.id]);
+  }, [text, sending, sessionExpired, outboundWarningsEnabled, checkOutboundUpl, performSend]);
+
+  // "Editar mensaje" — also fires for any other way of dismissing the
+  // dialog (Escape, click outside): the message wasn't sent either way.
+  const handleUplEdit = useCallback(() => {
+    if (!uplWarningText) return;
+    logUplDecision("edited", uplWarningText);
+    setUplWarningText(null);
+    requestAnimationFrame(() => textareaRef.current?.focus());
+  }, [uplWarningText, logUplDecision]);
+
+  const handleUplSendAnyway = useCallback(() => {
+    if (!uplWarningText) return;
+    logUplDecision("sent_anyway", uplWarningText);
+    performSend(uplWarningText);
+    setUplWarningText(null);
+  }, [uplWarningText, logUplDecision, performSend]);
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -618,7 +726,11 @@ export function MessageComposer({
             onClick={handleSend}
             className="h-9 w-9 shrink-0 bg-primary p-0 hover:bg-primary/90 disabled:opacity-40"
           >
-            <Send className="h-4 w-4" />
+            {sending ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Send className="h-4 w-4" />
+            )}
           </GatedButton>
         </div>
       )}
@@ -631,6 +743,34 @@ export function MessageComposer({
           Tap the ✨ to draft a reply with AI — you can edit it before sending
         </p>
       )}
+
+      <Dialog
+        open={uplWarningText !== null}
+        onOpenChange={(open) => {
+          if (!open) handleUplEdit();
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <AlertTriangle className="h-5 w-5 shrink-0 text-amber-500" />
+              Posible asesoría legal
+            </DialogTitle>
+            <DialogDescription>
+              Este mensaje podría interpretarse como asesoría legal o una
+              promesa de resultado. Revisa el contenido antes de enviarlo.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={handleUplEdit}>
+              Editar mensaje
+            </Button>
+            <Button variant="destructive" onClick={handleUplSendAnyway}>
+              Enviar de todas formas
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

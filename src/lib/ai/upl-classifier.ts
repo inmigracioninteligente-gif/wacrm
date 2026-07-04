@@ -1,5 +1,10 @@
 import type { AiConfig, ChatMessage } from './types'
-import { AI_PROVIDER_DEFAULT_MODEL, aiRequestTimeoutMs, buildUplClassifierPrompt } from './defaults'
+import {
+  AI_PROVIDER_DEFAULT_MODEL,
+  aiRequestTimeoutMs,
+  buildOutboundUplClassifierPrompt,
+  buildUplClassifierPrompt,
+} from './defaults'
 import { generateOpenAi } from './providers/openai'
 import { generateAnthropic } from './providers/anthropic'
 
@@ -10,31 +15,28 @@ export type UplClassification = 'legal_question' | 'general_question'
 const CLASSIFIER_MAX_TOKENS = 10
 
 /**
- * Classify the customer's latest message for UPL (Unauthorized Practice of
- * Law) risk, using the account's own BYO key but the provider's cheap
- * default model (not whatever model the account configured for full
- * replies) — this call runs on every inbound message, so it needs to stay
- * fast and cheap.
+ * Shared low-level classification call: cheap default model, tiny
+ * `max_tokens`, fail-closed on any error/ambiguous output. Both the
+ * inbound (customer message) and outbound (agent draft) classifiers are
+ * thin wrappers that only differ in system prompt + what's fed as the
+ * conversation.
  *
  * Fails closed: any unexpected output, provider error, or timeout is
  * treated as `legal_question`. This is a compliance safeguard — a false
- * positive (an unnecessary hand-off) is far cheaper than a false negative
- * (an automated reply that reads as legal advice).
+ * positive (an unnecessary hand-off / warning) is far cheaper than a false
+ * negative (a message that reads as legal advice going out unreviewed).
  */
-export async function classifyUplRisk(
+async function runClassifier(
   config: AiConfig,
-  latestMessage: string,
-  context: ChatMessage[],
+  systemPrompt: string,
+  messages: ChatMessage[],
 ): Promise<UplClassification> {
   try {
     const providerArgs = {
       apiKey: config.apiKey,
       model: AI_PROVIDER_DEFAULT_MODEL[config.provider],
-      systemPrompt: buildUplClassifierPrompt(),
-      messages:
-        context.length > 0
-          ? context
-          : [{ role: 'user' as const, content: latestMessage }],
+      systemPrompt,
+      messages,
       timeoutMs: aiRequestTimeoutMs(),
       maxTokens: CLASSIFIER_MAX_TOKENS,
     }
@@ -49,6 +51,41 @@ export async function classifyUplRisk(
     console.error('[upl classifier] classification failed, failing closed to legal_question:', err)
     return 'legal_question'
   }
+}
+
+/**
+ * Classify the customer's latest message for UPL (Unauthorized Practice of
+ * Law) risk, using the account's own BYO key but the provider's cheap
+ * default model (not whatever model the account configured for full
+ * replies) — this call runs on every inbound message, so it needs to stay
+ * fast and cheap.
+ */
+export async function classifyUplRisk(
+  config: AiConfig,
+  latestMessage: string,
+  context: ChatMessage[],
+): Promise<UplClassification> {
+  return runClassifier(
+    config,
+    buildUplClassifierPrompt(),
+    context.length > 0 ? context : [{ role: 'user', content: latestMessage }],
+  )
+}
+
+/**
+ * Classify a HUMAN AGENT's outgoing draft for UPL risk — the mirror image
+ * of `classifyUplRisk`. Runs once per Send click from the Inbox composer,
+ * never per keystroke, so it stays cheap. Independent of the AI auto-reply
+ * feature: never used on messages that already went through the bot's own
+ * safeguard.
+ */
+export async function classifyOutboundUplRisk(
+  config: AiConfig,
+  draftText: string,
+): Promise<UplClassification> {
+  return runClassifier(config, buildOutboundUplClassifierPrompt(), [
+    { role: 'user', content: draftText },
+  ])
 }
 
 function parseClassification(raw: string): UplClassification {

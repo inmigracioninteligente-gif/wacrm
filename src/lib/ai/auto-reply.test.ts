@@ -77,6 +77,7 @@ function aiConfig(overrides: Partial<AiConfig> = {}): AiConfig {
     autoReplyMaxPerConversation: 3,
     embeddingsApiKey: null,
     legalEscalationMessage: null,
+    outboundWarningsEnabled: true,
     ...overrides,
   }
 }

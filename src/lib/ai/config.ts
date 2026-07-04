@@ -12,10 +12,11 @@ interface AiConfigRow {
   auto_reply_max_per_conversation: number
   embeddings_api_key: string | null
   legal_escalation_message: string | null
+  outbound_warnings_enabled: boolean
 }
 
 const CONFIG_COLUMNS =
-  'provider, model, api_key, system_prompt, is_active, auto_reply_enabled, auto_reply_max_per_conversation, embeddings_api_key, legal_escalation_message'
+  'provider, model, api_key, system_prompt, is_active, auto_reply_enabled, auto_reply_max_per_conversation, embeddings_api_key, legal_escalation_message, outbound_warnings_enabled'
 
 /**
  * Load and decrypt the account's AI config for *use* (draft or
@@ -79,6 +80,7 @@ export async function loadAiConfig(
     autoReplyMaxPerConversation: row.auto_reply_max_per_conversation,
     embeddingsApiKey,
     legalEscalationMessage: row.legal_escalation_message,
+    outboundWarningsEnabled: row.outbound_warnings_enabled,
   }
 }
 
