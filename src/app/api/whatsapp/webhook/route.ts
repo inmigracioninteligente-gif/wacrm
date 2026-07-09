@@ -10,6 +10,7 @@ import { dispatchInboundToFlows } from '@/lib/flows/engine'
 import { dispatchInboundToAiReply } from '@/lib/ai/auto-reply'
 import { runUplSafeguard } from '@/lib/ai/upl-safeguard'
 import { dispatchWebhookEvent } from '@/lib/webhooks/deliver'
+import { notifyAdminOfNewMessage } from '@/lib/whatsapp/admin-notify'
 import {
   handleTemplateWebhookChange,
   isTemplateWebhookField,
@@ -789,6 +790,22 @@ async function processMessage(
       },
     }).catch((err) => console.error('[automations] dispatch failed:', err))
   }
+
+  // Admin WhatsApp notification — alerts the account admin's own phone
+  // (never the business number) when a customer message comes in, gated
+  // by that account's notification_settings (enabled + notify_mode).
+  // Fire-and-forget, same reasoning as the automations dispatch above:
+  // a failed/slow notification send must never block the webhook's 200
+  // OK to Meta or the customer's message from being received.
+  notifyAdminOfNewMessage({
+    accountId,
+    contactName,
+    // Meta rejects empty template variables — media messages with no
+    // caption (contentText) fall back to a bracketed type label, same
+    // as the conversation's last_message_text update above.
+    messagePreview: inboundText.trim() || `[${message.type}]`,
+    isFirstInboundMessage,
+  }).catch((err) => console.error('[admin-notify] dispatch failed:', err))
 
   // AI auto-reply. Runs only for plain-text inbound the deterministic
   // flow runner did NOT consume (flows win over the LLM), and only when
