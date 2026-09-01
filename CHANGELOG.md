@@ -9,6 +9,44 @@ Versions follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Pre-1.0, `MINOR` bumps cover new modules; `PATCH` bumps cover bug fixes
 and polish.
 
+## [0.8.0] — 2026-08-31
+
+Turns the single AI agent into **multiple selectable agent profiles**,
+chosen by a numbered WhatsApp menu at the start of each conversation,
+plus automated CRM handoff when a profile's objective is reached.
+
+### Added
+
+- **Multi-profile AI agents.** Define any number of agent profiles
+  (name, menu label, extra match keywords, system prompt, active) under
+  **AI Agents → Setup → Perfiles**. A brand-new conversation gets a
+  numbered menu built from the active profiles instead of an LLM reply;
+  the customer's response is matched by number or keyword, no AI call
+  involved. Once matched, every AI reply on that thread uses that
+  profile's own system prompt. Two unmatched attempts turn the AI off
+  for that thread and notify the account's admins. The Playground gained
+  a profile picker to test any profile before it goes live.
+  **Migration required:** apply
+  `supabase/migrations/034_ai_agent_profiles.sql` (adds
+  `ai_agent_profiles`; adds `active_agent_profile_id` /
+  `agent_menu_attempts` to `conversations`; extends `notifications.type`;
+  migrates the existing single-agent config into an inactive profile per
+  account so in-flight conversations keep working unchanged).
+- **Explicit human handoff.** A customer message containing "hablar con
+  un humano/agente/persona" immediately disables the AI on that
+  conversation — regardless of which profile it's on — sends a short
+  confirmation, and notifies the account's admins.
+- **Automated CRM handoff on profile completion.** Each profile can
+  configure a `handoff_tag` and/or `handoff_pipeline_stage`. When the
+  model's reply is that profile's own closing/hand-off message, the
+  contact is tagged, its deal is moved (or created) into the named
+  Pipeline stage, the AI is disabled on that conversation, and an
+  automated note is logged on the contact — once per conversation.
+  **Migration required:** apply
+  `supabase/migrations/035_ai_agent_profile_handoff.sql` (adds
+  `handoff_tag` / `handoff_pipeline_stage` to `ai_agent_profiles`; adds
+  `handoff_completed` to `conversations`).
+
 ## [0.7.0] — 2026-07-02
 
 Promotes the AI assistant to a first-class **AI Agents** section in the

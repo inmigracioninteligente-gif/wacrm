@@ -9,6 +9,7 @@ import { runAutomationsForTrigger } from '@/lib/automations/engine'
 import { dispatchInboundToFlows } from '@/lib/flows/engine'
 import { dispatchInboundToAiReply } from '@/lib/ai/auto-reply'
 import { runUplSafeguard } from '@/lib/ai/upl-safeguard'
+import { runHumanHandoffCheck } from '@/lib/ai/human-handoff'
 import { dispatchWebhookEvent } from '@/lib/webhooks/deliver'
 import { notifyAdminOfNewMessage } from '@/lib/whatsapp/admin-notify'
 import {
@@ -813,27 +814,43 @@ async function processMessage(
   // the webhook dispatch below); `dispatchInboundToAiReply` owns its
   // eligibility gates + try/catch and never throws.
   //
-  // The UPL safeguard runs first and unconditionally (it has its own,
-  // independent gate — an AI key configured, active or not) so a legal
-  // question can never reach the bot's normal reply path. It's awaited
-  // before the bot runs: if it flags the message it also flips
+  // The explicit human-handoff check runs first and unconditionally — a
+  // customer asking for a human ("hablar con un humano/agente/persona")
+  // always wins, regardless of which agent profile (or none) the
+  // conversation is on. It flips `ai_autoreply_disabled`, so when it
+  // matches we skip the UPL safeguard and the bot entirely for this
+  // inbound: there's nothing left for either to do.
+  //
+  // Otherwise the UPL safeguard runs next, unconditionally (it has its
+  // own, independent gate — an AI key configured, active or not) so a
+  // legal question can never reach the bot's normal reply path. It's
+  // awaited before the bot runs: if it flags the message it also flips
   // `ai_autoreply_disabled`, which `dispatchInboundToAiReply` will then see
   // and no-op on, on top of having already sent its own hand-off reply.
   if (!flowConsumed && !interactiveReplyId && inboundText.trim()) {
-    await runUplSafeguard({
+    const handedOffToHuman = await runHumanHandoffCheck({
       accountId,
       conversationId: conversation.id,
       contactId: contactRecord.id,
       configOwnerUserId,
-      messageId: insertedMessage.id,
       text: inboundText,
     })
-    await dispatchInboundToAiReply({
-      accountId,
-      conversationId: conversation.id,
-      contactId: contactRecord.id,
-      configOwnerUserId,
-    })
+    if (!handedOffToHuman) {
+      await runUplSafeguard({
+        accountId,
+        conversationId: conversation.id,
+        contactId: contactRecord.id,
+        configOwnerUserId,
+        messageId: insertedMessage.id,
+        text: inboundText,
+      })
+      await dispatchInboundToAiReply({
+        accountId,
+        conversationId: conversation.id,
+        contactId: contactRecord.id,
+        configOwnerUserId,
+      })
+    }
   }
 
   // message.received webhook (public API). Awaited — not fire-and-forget

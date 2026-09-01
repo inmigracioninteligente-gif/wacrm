@@ -1,5 +1,5 @@
 import { AiError, type AiConfig, type ChatMessage, type GenerateResult } from './types'
-import { HANDOFF_SENTINEL, aiRequestTimeoutMs } from './defaults'
+import { HANDOFF_SENTINEL, HANDOFF_READY_SENTINEL, aiRequestTimeoutMs } from './defaults'
 import { generateOpenAi } from './providers/openai'
 import { generateAnthropic } from './providers/anthropic'
 
@@ -46,12 +46,21 @@ export async function generateReply(args: GenerateArgs): Promise<GenerateResult>
 }
 
 /**
- * Split the raw model output into `{ text, handoff }`. The sentinel can
- * appear alone or trailing a partial reply; either way we treat the
- * turn as a handoff and strip the marker from any remaining text.
+ * Split the raw model output into `{ text, handoff, handoffReady }`. Each
+ * sentinel can appear alone or trailing a partial reply; either way we
+ * flag it and strip the marker from any remaining text. The two
+ * sentinels are independent (different meanings — see
+ * `HANDOFF_SENTINEL` / `HANDOFF_READY_SENTINEL`) and don't collide as
+ * substrings of each other.
  */
 export function parseGeneration(raw: string): GenerateResult {
   const handoff = raw.includes(HANDOFF_SENTINEL)
-  const text = raw.split(HANDOFF_SENTINEL).join('').trim()
-  return { text, handoff }
+  const handoffReady = raw.includes(HANDOFF_READY_SENTINEL)
+  const text = raw
+    .split(HANDOFF_SENTINEL)
+    .join('')
+    .split(HANDOFF_READY_SENTINEL)
+    .join('')
+    .trim()
+  return { text, handoff, handoffReady }
 }

@@ -8,6 +8,10 @@ const h = vi.hoisted(() => ({
   retrieveKnowledge: vi.fn(),
   generateReply: vi.fn(),
   engineSendText: vi.fn(),
+  loadActiveAgentProfiles: vi.fn(),
+  loadAgentProfileById: vi.fn(),
+  handleMenuRouterTurn: vi.fn(),
+  applyProfileHandoff: vi.fn(),
   state: {
     conv: null as Record<string, unknown> | null,
     autoResponders: [] as { id: string }[],
@@ -22,6 +26,16 @@ vi.mock('./context', () => ({ buildConversationContext: h.buildConversationConte
 vi.mock('./knowledge', () => ({ retrieveKnowledge: h.retrieveKnowledge }))
 vi.mock('./generate', () => ({ generateReply: h.generateReply }))
 vi.mock('@/lib/flows/meta-send', () => ({ engineSendText: h.engineSendText }))
+vi.mock('./agent-profiles', () => ({
+  loadActiveAgentProfiles: h.loadActiveAgentProfiles,
+  loadAgentProfileById: h.loadAgentProfileById,
+}))
+vi.mock('./menu-router-dispatch', () => ({
+  handleMenuRouterTurn: h.handleMenuRouterTurn,
+}))
+vi.mock('./profile-handoff', () => ({
+  applyProfileHandoff: h.applyProfileHandoff,
+}))
 vi.mock('./admin-client', () => ({
   supabaseAdmin: () => ({
     from: (table: string) => {
@@ -95,8 +109,15 @@ beforeEach(() => {
   h.loadAiConfig.mockResolvedValue(aiConfig())
   h.buildConversationContext.mockResolvedValue([{ role: 'user', content: 'hi' }])
   h.retrieveKnowledge.mockResolvedValue([])
-  h.generateReply.mockResolvedValue({ text: 'Hello!', handoff: false })
+  h.generateReply.mockResolvedValue({ text: 'Hello!', handoff: false, handoffReady: false })
   h.engineSendText.mockResolvedValue({ whatsapp_message_id: 'm1' })
+  // Legacy default: no agent profiles configured for the account, so the
+  // menu router is skipped entirely and `config.systemPrompt` is used
+  // directly — matches pre-multi-profile behaviour for all the tests above.
+  h.loadActiveAgentProfiles.mockResolvedValue([])
+  h.loadAgentProfileById.mockResolvedValue(null)
+  h.handleMenuRouterTurn.mockResolvedValue({ matchedProfileId: null })
+  h.applyProfileHandoff.mockResolvedValue(undefined)
 })
 
 describe('dispatchInboundToAiReply — eligibility gates', () => {
@@ -194,5 +215,173 @@ describe('dispatchInboundToAiReply — handoff', () => {
     expect(h.engineSendText).not.toHaveBeenCalled()
     expect(h.state.updatePayload).toEqual({ ai_autoreply_disabled: true })
     expect(h.state.rpcCalls).toHaveLength(0)
+  })
+})
+
+describe('dispatchInboundToAiReply — multi-profile agent routing', () => {
+  const PROFILES = [
+    { id: 'profile-ami', name: 'AMI', menu_label: 'Certificación AMI', extra_keywords: null, position: 1, system_prompt: 'AMI PROMPT', is_active: true },
+    { id: 'profile-support', name: 'Soporte', menu_label: 'Soporte', extra_keywords: null, position: 2, system_prompt: 'SUPPORT PROMPT', is_active: true },
+  ]
+
+  it('delegates to the menu router when no profile is selected yet, and skips the LLM entirely when the turn is fully handled', async () => {
+    h.state.conv = {
+      assigned_agent_id: null,
+      ai_autoreply_disabled: false,
+      ai_reply_count: 0,
+      active_agent_profile_id: null,
+      agent_menu_attempts: 0,
+    }
+    h.loadActiveAgentProfiles.mockResolvedValue(PROFILES)
+    h.handleMenuRouterTurn.mockResolvedValue({ matchedProfileId: null })
+
+    await dispatchInboundToAiReply(ARGS)
+
+    expect(h.handleMenuRouterTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        accountId: ARGS.accountId,
+        conversationId: ARGS.conversationId,
+        contactId: ARGS.contactId,
+        configOwnerUserId: ARGS.configOwnerUserId,
+        agentMenuAttempts: 0,
+        activeProfiles: PROFILES,
+        inboundText: 'hi',
+      }),
+    )
+    expect(h.generateReply).not.toHaveBeenCalled()
+    expect(h.engineSendText).not.toHaveBeenCalled()
+  })
+
+  it('generates the reply with the just-matched profile system_prompt and continues to send', async () => {
+    h.state.conv = {
+      assigned_agent_id: null,
+      ai_autoreply_disabled: false,
+      ai_reply_count: 0,
+      active_agent_profile_id: null,
+      agent_menu_attempts: 1,
+    }
+    h.loadActiveAgentProfiles.mockResolvedValue(PROFILES)
+    h.handleMenuRouterTurn.mockResolvedValue({ matchedProfileId: 'profile-ami' })
+
+    await dispatchInboundToAiReply(ARGS)
+
+    const systemPrompt = h.generateReply.mock.calls[0][0].systemPrompt as string
+    expect(systemPrompt).toContain('AMI PROMPT')
+    expect(h.engineSendText).toHaveBeenCalledWith(
+      expect.objectContaining({ conversationId: ARGS.conversationId, text: 'Hello!' }),
+    )
+  })
+
+  it('uses the already-selected profile system_prompt instead of the account-level one', async () => {
+    h.loadAiConfig.mockResolvedValue(aiConfig({ systemPrompt: 'ACCOUNT PROMPT' }))
+    h.state.conv = {
+      assigned_agent_id: null,
+      ai_autoreply_disabled: false,
+      ai_reply_count: 0,
+      active_agent_profile_id: 'profile-support',
+      agent_menu_attempts: 0,
+    }
+    h.loadAgentProfileById.mockResolvedValue(PROFILES[1])
+
+    await dispatchInboundToAiReply(ARGS)
+
+    expect(h.loadAgentProfileById).toHaveBeenCalledWith(
+      expect.anything(),
+      ARGS.accountId,
+      'profile-support',
+    )
+    expect(h.loadActiveAgentProfiles).not.toHaveBeenCalled()
+    const systemPrompt = h.generateReply.mock.calls[0][0].systemPrompt as string
+    expect(systemPrompt).toContain('SUPPORT PROMPT')
+    expect(systemPrompt).not.toContain('ACCOUNT PROMPT')
+  })
+})
+
+describe('dispatchInboundToAiReply — profile handoff (handoff_ready)', () => {
+  const PROFILE = {
+    id: 'profile-ami',
+    name: 'Certificación AMI',
+    menu_label: 'Certificación AMI',
+    extra_keywords: null,
+    position: 1,
+    system_prompt: 'AMI PROMPT',
+    is_active: true,
+    handoff_tag: 'AMI - Lead',
+    handoff_pipeline_stage: 'Qualified',
+  }
+
+  it('applies the profile handoff and still sends the closing message when handoff_ready is true', async () => {
+    h.state.conv = {
+      assigned_agent_id: null,
+      ai_autoreply_disabled: false,
+      ai_reply_count: 0,
+      active_agent_profile_id: 'profile-ami',
+      agent_menu_attempts: 0,
+      handoff_completed: false,
+    }
+    h.loadAgentProfileById.mockResolvedValue(PROFILE)
+    h.generateReply.mockResolvedValue({
+      text: 'Perfecto, alguien del equipo te contacta.',
+      handoff: false,
+      handoffReady: true,
+    })
+
+    await dispatchInboundToAiReply(ARGS)
+
+    expect(h.applyProfileHandoff).toHaveBeenCalledWith(
+      expect.objectContaining({
+        accountId: ARGS.accountId,
+        conversationId: ARGS.conversationId,
+        contactId: ARGS.contactId,
+        configOwnerUserId: ARGS.configOwnerUserId,
+        profile: PROFILE,
+      }),
+    )
+    expect(h.engineSendText).toHaveBeenCalledWith(
+      expect.objectContaining({ text: 'Perfecto, alguien del equipo te contacta.' }),
+    )
+  })
+
+  it('does not re-apply the handoff when the conversation already completed it', async () => {
+    h.state.conv = {
+      assigned_agent_id: null,
+      ai_autoreply_disabled: false,
+      ai_reply_count: 0,
+      active_agent_profile_id: 'profile-ami',
+      agent_menu_attempts: 0,
+      handoff_completed: true,
+    }
+    h.loadAgentProfileById.mockResolvedValue(PROFILE)
+    h.generateReply.mockResolvedValue({ text: 'ok', handoff: false, handoffReady: true })
+
+    await dispatchInboundToAiReply(ARGS)
+
+    expect(h.applyProfileHandoff).not.toHaveBeenCalled()
+    expect(h.engineSendText).toHaveBeenCalled()
+  })
+
+  it('does not apply a profile handoff when there is no active profile (legacy single-agent)', async () => {
+    h.generateReply.mockResolvedValue({ text: 'ok', handoff: false, handoffReady: true })
+    await dispatchInboundToAiReply(ARGS)
+    expect(h.applyProfileHandoff).not.toHaveBeenCalled()
+  })
+
+  it('passes profileHandoff:true to buildSystemPrompt only when a profile is active', async () => {
+    h.state.conv = {
+      assigned_agent_id: null,
+      ai_autoreply_disabled: false,
+      ai_reply_count: 0,
+      active_agent_profile_id: 'profile-ami',
+      agent_menu_attempts: 0,
+      handoff_completed: false,
+    }
+    h.loadAgentProfileById.mockResolvedValue(PROFILE)
+
+    await dispatchInboundToAiReply(ARGS)
+
+    // buildSystemPrompt itself isn't mocked, so assert indirectly via the
+    // generated system prompt containing the handoff-ready instruction.
+    const systemPrompt = h.generateReply.mock.calls[0][0].systemPrompt as string
+    expect(systemPrompt).toContain('[[HANDOFF_READY]]')
   })
 })

@@ -23,6 +23,18 @@ export const AI_PROVIDER_DEFAULT_MODEL: Record<AiProvider, string> = {
 export const HANDOFF_SENTINEL = '[[HANDOFF]]'
 
 /**
+ * Sentinel the model is instructed to append (only when a profile —
+ * `ai_agent_profiles` — is active, see `dispatchInboundToAiReply`) when
+ * the reply it just wrote IS that profile's own closing/hand-off message
+ * — the one telling the customer someone from the team will follow up.
+ * Unlike `HANDOFF_SENTINEL` (model can't help, human takes over
+ * mid-conversation), this means the profile's objective was reached
+ * successfully. Parsed and stripped by `generateReply`; triggers
+ * `applyProfileHandoff` (tag + pipeline stage + note + disable AI).
+ */
+export const HANDOFF_READY_SENTINEL = '[[HANDOFF_READY]]'
+
+/**
  * UPL (Unauthorized Practice of Law) safeguard — see `upl-classifier.ts` /
  * `upl-safeguard.ts`. Independent of the handoff sentinel above: this runs
  * *before* any reply is generated, on every inbound message, regardless of
@@ -112,8 +124,13 @@ export function buildSystemPrompt(args: {
   mode: 'draft' | 'auto_reply'
   /** Knowledge-base excerpts retrieved for the current question. */
   knowledge?: string[]
+  /** True when `userPrompt` is an `ai_agent_profiles.system_prompt` (as
+   *  opposed to the account-level single-agent prompt) — teaches the
+   *  `HANDOFF_READY_SENTINEL` protocol so `applyProfileHandoff` knows
+   *  when the profile's objective was reached. */
+  profileHandoff?: boolean
 }): string {
-  const { userPrompt, mode, knowledge } = args
+  const { userPrompt, mode, knowledge, profileHandoff } = args
   const parts: string[] = [
     'You are a customer-messaging assistant for a business that uses a WhatsApp CRM. ' +
       'You are shown the recent WhatsApp conversation between the business (assistant) and a customer (user). ' +
@@ -127,6 +144,12 @@ export function buildSystemPrompt(args: {
   if (mode === 'auto_reply') {
     parts.push(
       `You are replying automatically with no human in the loop. If you cannot confidently and safely help — the customer explicitly asks for a human, is upset or complaining, or the request needs information you do not have — reply with exactly ${HANDOFF_SENTINEL} and nothing else. A human agent will then take over. Prefer handing off over guessing.`,
+    )
+  }
+
+  if (mode === 'auto_reply' && profileHandoff) {
+    parts.push(
+      `Your instructions above describe a specific closing/hand-off message to send once your objective with this customer is reached (the one telling them someone from the team will follow up). If, and only if, the reply you are writing right now IS that exact closing message, append ${HANDOFF_READY_SENTINEL} at the very end, after your reply text, separated by a space. Do not mention or explain this marker to the customer. Do not include it on any other turn — only on the turn that sends the closing message itself.`,
     )
   }
 

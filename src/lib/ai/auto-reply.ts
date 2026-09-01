@@ -5,6 +5,9 @@ import { retrieveKnowledge } from './knowledge'
 import { generateReply } from './generate'
 import { buildSystemPrompt } from './defaults'
 import { latestUserMessage } from './query'
+import { loadActiveAgentProfiles, loadAgentProfileById, type AgentProfile } from './agent-profiles'
+import { handleMenuRouterTurn } from './menu-router-dispatch'
+import { applyProfileHandoff } from './profile-handoff'
 import { engineSendText } from '@/lib/flows/meta-send'
 
 interface DispatchArgs {
@@ -31,6 +34,14 @@ interface DispatchArgs {
  *   - auto-reply was disabled for this conversation (prior handoff)
  *   - the per-conversation reply cap is reached
  *   - there's nothing to reply to
+ *
+ * Multi-profile routing: when the account has active `ai_agent_profiles`
+ * and the conversation hasn't picked one yet, this delegates the entire
+ * turn to the menu router (`menu-router-dispatch.ts`) instead of calling
+ * the LLM — see the inline comment below. Once a profile is picked (or
+ * the account has none configured, preserving the legacy single-agent
+ * behaviour), generation proceeds as before using that profile's
+ * `system_prompt` in place of the account-level `config.systemPrompt`.
  *
  * The 24h WhatsApp session window is inherently open here — we're
  * reacting to a customer message that just landed — so no separate
@@ -66,18 +77,49 @@ export async function dispatchInboundToAiReply(
 
     const { data: conv, error: convErr } = await db
       .from('conversations')
-      .select('assigned_agent_id, ai_autoreply_disabled, ai_reply_count')
+      .select(
+        'assigned_agent_id, ai_autoreply_disabled, ai_reply_count, active_agent_profile_id, agent_menu_attempts, handoff_completed',
+      )
       .eq('id', conversationId)
       .maybeSingle()
     if (convErr || !conv) return
     if (conv.assigned_agent_id) return // a human owns this thread
     if (conv.ai_autoreply_disabled) return // handed off / turned off here
-    // Cheap early-out; the authoritative cap check is the atomic claim
-    // below (this read can race a concurrent inbound).
-    if (conv.ai_reply_count >= config.autoReplyMaxPerConversation) return
 
     const messages = await buildConversationContext(db, conversationId)
     if (messages.length === 0) return
+
+    // Multi-profile menu router: a conversation with no
+    // `active_agent_profile_id` yet is routed here instead of the LLM —
+    // see menu-router-dispatch.ts. Accounts with no active profiles skip
+    // this entirely and keep the legacy single-agent behaviour
+    // (`config.systemPrompt` used directly, below).
+    let activeProfile: AgentProfile | null = null
+    if (!conv.active_agent_profile_id) {
+      const activeProfiles = await loadActiveAgentProfiles(db, accountId)
+      if (activeProfiles.length > 0) {
+        const { matchedProfileId } = await handleMenuRouterTurn({
+          db,
+          accountId,
+          conversationId,
+          contactId,
+          configOwnerUserId,
+          agentMenuAttempts: conv.agent_menu_attempts,
+          activeProfiles,
+          inboundText: latestUserMessage(messages),
+        })
+        // Menu sent/resent, or the router gave up — either way this turn
+        // is fully handled without calling the LLM.
+        if (!matchedProfileId) return
+        activeProfile = activeProfiles.find((p) => p.id === matchedProfileId) ?? null
+      }
+    } else {
+      activeProfile = await loadAgentProfileById(db, accountId, conv.active_agent_profile_id)
+    }
+
+    // Cheap early-out; the authoritative cap check is the atomic claim
+    // below (this read can race a concurrent inbound).
+    if (conv.ai_reply_count >= config.autoReplyMaxPerConversation) return
 
     // Ground the reply in the account's knowledge base (best-effort).
     const knowledge = await retrieveKnowledge(
@@ -88,12 +130,13 @@ export async function dispatchInboundToAiReply(
     )
 
     const systemPrompt = buildSystemPrompt({
-      userPrompt: config.systemPrompt,
+      userPrompt: activeProfile?.system_prompt ?? config.systemPrompt,
       mode: 'auto_reply',
       knowledge,
+      profileHandoff: activeProfile !== null,
     })
 
-    const { text, handoff } = await generateReply({
+    const { text, handoff, handoffReady } = await generateReply({
       config,
       systemPrompt,
       messages,
@@ -108,6 +151,21 @@ export async function dispatchInboundToAiReply(
         .update({ ai_autoreply_disabled: true })
         .eq('id', conversationId)
       return
+    }
+
+    // The active profile's own closing message — its objective with this
+    // contact was reached. Reflect that in the CRM (tag / pipeline stage /
+    // note) and turn the AI off for this thread, but still send the
+    // closing text below like any other reply.
+    if (handoffReady && activeProfile && !conv.handoff_completed) {
+      await applyProfileHandoff({
+        db,
+        accountId,
+        conversationId,
+        contactId,
+        configOwnerUserId,
+        profile: activeProfile,
+      })
     }
 
     // Atomically claim a reply slot: the cap check + increment happen in

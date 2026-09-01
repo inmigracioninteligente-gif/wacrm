@@ -46,6 +46,10 @@ export interface GenerateResult {
   text: string
   /** True when the model asked to hand off to a human (auto-reply mode). */
   handoff: boolean
+  /** True when this reply is the active agent profile's own closing/
+   *  hand-off message (its objective was reached) — see
+   *  `HANDOFF_READY_SENTINEL` and `applyProfileHandoff`. */
+  handoffReady: boolean
 }
 
 /**

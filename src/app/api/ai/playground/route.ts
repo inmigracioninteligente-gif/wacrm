@@ -6,6 +6,7 @@ import { retrieveKnowledge } from '@/lib/ai/knowledge'
 import { generateReply } from '@/lib/ai/generate'
 import { buildSystemPrompt } from '@/lib/ai/defaults'
 import { latestUserMessage } from '@/lib/ai/query'
+import { loadAgentProfileById } from '@/lib/ai/agent-profiles'
 import { AiError, type ChatMessage } from '@/lib/ai/types'
 
 // Keep the tested transcript bounded, mirroring the live context window.
@@ -72,6 +73,17 @@ export async function POST(request: Request) {
       )
     }
 
+    // Optional: test as a specific agent profile instead of the
+    // account-level agent — same override `dispatchInboundToAiReply`
+    // applies once a conversation has picked a profile. Absent/invalid
+    // `profile_id` falls back to `config.systemPrompt` (the legacy
+    // single-agent behaviour, or "Sin perfil" in the Playground).
+    let profileSystemPrompt: string | null = null
+    if (typeof body?.profile_id === 'string' && body.profile_id) {
+      const profile = await loadAgentProfileById(supabase, accountId, body.profile_id)
+      profileSystemPrompt = profile?.system_prompt ?? null
+    }
+
     const knowledge = await retrieveKnowledge(
       supabase,
       accountId,
@@ -79,7 +91,7 @@ export async function POST(request: Request) {
       latestUserMessage(messages),
     )
     const systemPrompt = buildSystemPrompt({
-      userPrompt: config.systemPrompt,
+      userPrompt: profileSystemPrompt ?? config.systemPrompt,
       mode: 'auto_reply',
       knowledge,
     })

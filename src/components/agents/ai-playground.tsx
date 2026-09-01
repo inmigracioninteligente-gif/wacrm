@@ -5,6 +5,13 @@ import { toast } from 'sonner';
 import { Bot, RotateCcw, Send, Loader2, UserCircle2, ArrowRight } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 
 interface Turn {
   role: 'user' | 'assistant';
@@ -13,15 +20,39 @@ interface Turn {
   handoff?: boolean;
 }
 
+interface AgentProfileOption {
+  id: string;
+  name: string;
+  is_active: boolean;
+}
+
+/** Sentinel for "no profile" in the <Select> — falls back to the
+ *  account-level agent (`ai_configs.system_prompt`). */
+const NO_PROFILE = '__none__';
+
 export function AiPlayground({ onGoToSetup }: { onGoToSetup?: () => void }) {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
+  const [profiles, setProfiles] = useState<AgentProfileOption[]>([]);
+  const [profileId, setProfileId] = useState<string>(NO_PROFILE);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
   }, [turns, sending]);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch('/api/ai/agent-profiles');
+        const data = await res.json().catch(() => ({}));
+        if (res.ok) setProfiles(data.profiles ?? []);
+      } catch {
+        // Best-effort — the picker just stays on "Sin perfil" if this fails.
+      }
+    })();
+  }, []);
 
   const send = async () => {
     const text = input.trim();
@@ -35,9 +66,10 @@ export function AiPlayground({ onGoToSetup }: { onGoToSetup?: () => void }) {
       const res = await fetch('/api/ai/playground', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        // Send only role+content — the server ignores anything else.
         body: JSON.stringify({
+          // Send only role+content — the server ignores anything else.
           messages: next.map((t) => ({ role: t.role, content: t.content })),
+          profile_id: profileId === NO_PROFILE ? undefined : profileId,
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -82,7 +114,7 @@ export function AiPlayground({ onGoToSetup }: { onGoToSetup?: () => void }) {
   return (
     <div className="flex h-[60vh] min-h-[420px] flex-col rounded-xl border border-border bg-card">
       {/* Header */}
-      <div className="flex items-center justify-between border-b border-border px-4 py-3">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-3">
         <div className="flex items-center gap-2">
           <Bot className="h-4 w-4 text-primary" />
           <span className="text-sm font-medium text-foreground">Playground</span>
@@ -90,15 +122,41 @@ export function AiPlayground({ onGoToSetup }: { onGoToSetup?: () => void }) {
             — test replies as if you were a customer
           </span>
         </div>
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={() => setTurns([])}
-          disabled={turns.length === 0 || sending}
-          className="text-muted-foreground"
-        >
-          <RotateCcw className="mr-1.5 h-3.5 w-3.5" /> Reset
-        </Button>
+        <div className="flex items-center gap-2">
+          {profiles.length > 0 && (
+            <Select
+              value={profileId}
+              onValueChange={(v) => {
+                if (!v) return;
+                setProfileId(v);
+                setTurns([]);
+              }}
+              disabled={sending}
+            >
+              <SelectTrigger className="h-8 w-[220px] text-xs">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={NO_PROFILE}>Sin perfil (agente único)</SelectItem>
+                {profiles.map((p) => (
+                  <SelectItem key={p.id} value={p.id}>
+                    {p.name}
+                    {!p.is_active ? ' (inactivo)' : ''}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setTurns([])}
+            disabled={turns.length === 0 || sending}
+            className="text-muted-foreground"
+          >
+            <RotateCcw className="mr-1.5 h-3.5 w-3.5" /> Reset
+          </Button>
+        </div>
       </div>
 
       {/* Transcript */}

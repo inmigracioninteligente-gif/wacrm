@@ -26,6 +26,7 @@ import {
 } from '@/components/ui/select';
 import { SettingsPanelHead } from './settings-panel-head';
 import { AiKnowledgeCard } from './ai-knowledge';
+import { AiAgentProfilesCard } from './ai-agent-profiles';
 import {
   AI_PROVIDER_DEFAULT_MODEL,
   DEFAULT_LEGAL_ESCALATION_MESSAGE,
@@ -498,6 +499,8 @@ export function AiConfig() {
             </div>
           </CardContent>
         </Card>
+
+        <AiAgentProfilesCard accountId={accountId} canEdit={canEdit} />
 
         <AiKnowledgeCard
           accountId={accountId}

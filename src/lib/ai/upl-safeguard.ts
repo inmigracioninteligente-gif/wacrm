@@ -1,9 +1,9 @@
-import type { SupabaseClient } from '@supabase/supabase-js'
 import { supabaseAdmin } from './admin-client'
 import { loadAiConfig } from './config'
 import { buildConversationContext } from './context'
 import { classifyUplRisk } from './upl-classifier'
 import { DEFAULT_LEGAL_ESCALATION_MESSAGE, UPL_TAG_NAME } from './defaults'
+import { notifyAdminsOfAiEvent, loadContactNameForNotification } from './notify-admins'
 import { engineSendText } from '@/lib/flows/meta-send'
 import {
   resolveImportTagIds,
@@ -84,7 +84,15 @@ export async function runUplSafeguard(args: UplSafeguardArgs): Promise<void> {
     }
 
     try {
-      await notifyAdmins(db, { accountId, conversationId, contactId })
+      const contactName = await loadContactNameForNotification(db, contactId)
+      await notifyAdminsOfAiEvent(db, {
+        accountId,
+        conversationId,
+        contactId,
+        type: 'legal_escalation',
+        title: 'Posible pregunta legal detectada',
+        body: `Un mensaje de ${contactName} fue clasificado como posible pregunta legal y requiere revisión.`,
+      })
     } catch (err) {
       console.error('[upl safeguard] failed to notify admins:', err)
     }
@@ -103,37 +111,4 @@ export async function runUplSafeguard(args: UplSafeguardArgs): Promise<void> {
   } catch (err) {
     console.error('[upl safeguard] dispatch failed:', err)
   }
-}
-
-async function notifyAdmins(
-  db: SupabaseClient,
-  args: { accountId: string; conversationId: string; contactId: string },
-): Promise<void> {
-  const { accountId, conversationId, contactId } = args
-
-  const [{ data: recipients }, { data: contact }] = await Promise.all([
-    db
-      .from('profiles')
-      .select('user_id')
-      .eq('account_id', accountId)
-      .in('account_role', ['owner', 'admin']),
-    db.from('contacts').select('name, phone').eq('id', contactId).maybeSingle(),
-  ])
-
-  if (!recipients || recipients.length === 0) return
-
-  const contactName = contact?.name?.trim() || contact?.phone || 'un contacto'
-
-  await db.from('notifications').insert(
-    recipients.map((r: { user_id: string }) => ({
-      account_id: accountId,
-      user_id: r.user_id,
-      type: 'legal_escalation',
-      conversation_id: conversationId,
-      contact_id: contactId,
-      actor_user_id: null,
-      title: 'Posible pregunta legal detectada',
-      body: `Un mensaje de ${contactName} fue clasificado como posible pregunta legal y requiere revisión.`,
-    })),
-  )
 }
