@@ -42,3 +42,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+wacrm-baileys-service/auth/
+wacrm-baileys-service/qr.png
+.DS_Store
