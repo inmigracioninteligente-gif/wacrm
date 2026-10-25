@@ -14,6 +14,8 @@ import { sendTemplateMessage } from '@/lib/whatsapp/meta-api'
 import { decrypt } from '@/lib/whatsapp/encryption'
 import { sanitizePhoneForMeta, isValidE164 } from '@/lib/whatsapp/phone-utils'
 import { supabaseAdmin } from '@/lib/flows/admin-client'
+import { getTwilioConfigForAccount } from '@/lib/twilio/config'
+import { sendTwilioMessage } from '@/lib/twilio/twilio-api'
 
 const TEMPLATE_NAME = 'paradesk_nuevo_mensaje'
 const TEMPLATE_LANGUAGE = 'en_US'
@@ -68,6 +70,30 @@ export async function notifyAdminOfNewMessage(args: NotifyAdminArgs): Promise<vo
     const sanitizedPhone = sanitizePhoneForMeta(settings.admin_phone)
     if (!isValidE164(sanitizedPhone)) {
       console.error('[admin-notify] admin_phone is not a valid E.164 number:', settings.admin_phone)
+      return
+    }
+
+    // Workspaces running on a Twilio number send the alert through
+    // Twilio with their own approved Content Template (HX…), since
+    // the Meta template lives in a different WhatsApp Business Account.
+    const twilio = await getTwilioConfigForAccount(db, accountId)
+    if (twilio) {
+      const contentSid = twilio.row.notify_content_sid
+      if (!contentSid) {
+        console.warn('[admin-notify] Twilio workspace has no notification template set:', accountId)
+        return
+      }
+      await sendTwilioMessage({
+        accountSid: twilio.row.account_sid,
+        authToken: twilio.authToken,
+        from: twilio.row.from_number,
+        to: sanitizedPhone,
+        contentSid,
+        contentVariables: {
+          '1': sanitizeTemplateParam(contactName || 'Contacto'),
+          '2': sanitizeTemplateParam(messagePreview),
+        },
+      })
       return
     }
 

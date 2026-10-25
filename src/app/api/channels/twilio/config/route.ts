@@ -6,6 +6,7 @@ import {
   generateSecret,
   hashSecret,
   isValidAccountSid,
+  isValidContentSid,
   toE164,
   TwilioApiError,
   verifyTwilioCredentials,
@@ -32,7 +33,7 @@ export async function GET(request: Request) {
     const ctx = await requireRole('viewer')
     const { data, error } = await ctx.supabase
       .from('twilio_config')
-      .select('account_sid, from_number, status, public_base_url, updated_at')
+      .select('*')
       .eq('account_id', ctx.accountId)
       .maybeSingle()
 
@@ -54,6 +55,8 @@ export async function GET(request: Request) {
       from_number: data?.from_number ?? null,
       status: data?.status ?? null,
       updated_at: data?.updated_at ?? null,
+      // Undefined until migration 037 is applied.
+      notify_content_sid: data?.notify_content_sid ?? null,
       ingest_url: `${base}/api/channels/twilio/ingest`,
     })
   } catch (err) {
@@ -132,6 +135,18 @@ export async function POST(request: Request) {
       )
     }
 
+    // Optional approved Content Template for admin alerts. Only sent
+    // when the client includes the field, so a pre-037 schema without
+    // the column keeps working.
+    const notifyInput =
+      typeof body?.notify_content_sid === 'string' ? body.notify_content_sid.trim() : undefined
+    if (notifyInput && !isValidContentSid(notifyInput)) {
+      return NextResponse.json(
+        { error: 'The notification template SID must start with "HX" followed by 32 characters.' },
+        { status: 400 },
+      )
+    }
+
     const base = publicBaseUrl(request)
     const row = {
       account_sid: accountSid,
@@ -139,6 +154,7 @@ export async function POST(request: Request) {
       from_number: fromNumber,
       public_base_url: base,
       status: 'connected' as const,
+      ...(notifyInput !== undefined ? { notify_content_sid: notifyInput || null } : {}),
     }
 
     if (existing) {

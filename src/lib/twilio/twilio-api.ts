@@ -22,6 +22,14 @@ export interface SendTwilioMessageParams extends TwilioCredentials {
   mediaUrl?: string | null;
   /** Optional delivery-receipt webhook. */
   statusCallback?: string | null;
+  /** Approved Content Template (HX…) — required outside the 24h window. */
+  contentSid?: string | null;
+  /** Template variables, e.g. { "1": "Ana", "2": "Hola" }. */
+  contentVariables?: Record<string, string> | null;
+}
+
+export function isValidContentSid(sid: string): boolean {
+  return /^HX[0-9a-fA-F]{32}$/.test(sid.trim());
 }
 
 export class TwilioApiError extends Error {
@@ -55,17 +63,32 @@ export function isValidAccountSid(sid: string): boolean {
 export async function sendTwilioMessage(
   params: SendTwilioMessageParams,
 ): Promise<{ sid: string; status: string }> {
-  const { accountSid, authToken, from, to, body, mediaUrl, statusCallback } = params;
+  const {
+    accountSid,
+    authToken,
+    from,
+    to,
+    body,
+    mediaUrl,
+    statusCallback,
+    contentSid,
+    contentVariables,
+  } = params;
 
-  if (!body && !mediaUrl) {
-    throw new TwilioApiError('Message needs a body or a media URL', null, 400);
+  if (!body && !mediaUrl && !contentSid) {
+    throw new TwilioApiError('Message needs a body, a media URL or a template', null, 400);
   }
 
   const form = new URLSearchParams();
   form.set('From', toWhatsAppAddress(from));
   form.set('To', toWhatsAppAddress(to));
-  if (body) form.set('Body', body);
-  if (mediaUrl) form.set('MediaUrl', mediaUrl);
+  if (contentSid) {
+    form.set('ContentSid', contentSid);
+    if (contentVariables) form.set('ContentVariables', JSON.stringify(contentVariables));
+  } else {
+    if (body) form.set('Body', body);
+    if (mediaUrl) form.set('MediaUrl', mediaUrl);
+  }
   if (statusCallback) form.set('StatusCallback', statusCallback);
 
   const res = await fetch(

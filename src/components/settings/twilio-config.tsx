@@ -24,6 +24,7 @@ interface TwilioConfigState {
   from_number: string | null;
   status: 'connected' | 'disconnected' | null;
   ingest_url: string;
+  notify_content_sid?: string | null;
   migration_missing?: boolean;
   error?: string;
 }
@@ -42,6 +43,7 @@ export function TwilioConfig() {
   const [accountSid, setAccountSid] = useState('');
   const [authToken, setAuthToken] = useState('');
   const [fromNumber, setFromNumber] = useState('');
+  const [notifySid, setNotifySid] = useState('');
   // Shown once after first save / rotation; never refetchable.
   const [relaySecret, setRelaySecret] = useState<string | null>(null);
   const loadedAccountIdRef = useRef<string | null>(null);
@@ -58,6 +60,7 @@ export function TwilioConfig() {
       setState(data);
       setAccountSid(data.account_sid ?? '');
       setFromNumber(data.from_number ?? '');
+      setNotifySid(data.notify_content_sid ?? '');
       setAuthToken('');
     } catch {
       toast.error('Failed to load Twilio settings');
@@ -96,7 +99,12 @@ export function TwilioConfig() {
   };
 
   const handleSave = () =>
-    post({ account_sid: accountSid.trim(), auth_token: authToken.trim(), from_number: fromNumber.trim() });
+    post({
+      account_sid: accountSid.trim(),
+      auth_token: authToken.trim(),
+      from_number: fromNumber.trim(),
+      notify_content_sid: notifySid.trim(),
+    });
 
   const handleRotate = () => {
     if (
@@ -215,6 +223,22 @@ export function TwilioConfig() {
             onChange={(e) => setFromNumber(e.target.value)}
             disabled={!canEdit}
           />
+        </div>
+
+        <div className="space-y-2">
+          <Label htmlFor="twilio-notify">Alert template SID (optional)</Label>
+          <Input
+            id="twilio-notify"
+            autoComplete="off"
+            placeholder="HXxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+            value={notifySid}
+            onChange={(e) => setNotifySid(e.target.value)}
+            disabled={!canEdit}
+          />
+          <p className="text-xs text-muted-foreground">
+            Approved Twilio Content Template used for the &quot;new message&quot; alert in
+            Settings → Notifications. Variables: {'{{1}}'} contact, {'{{2}}'} message.
+          </p>
         </div>
 
         {canEdit && (

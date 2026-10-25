@@ -6,7 +6,14 @@ import {
   parseRelayPayload,
   RelayValidationError,
 } from './relay-ingest'
-import { hashSecret, mapTwilioStatus, toE164, isValidAccountSid } from './twilio-api'
+import {
+  hashSecret,
+  isValidAccountSid,
+  isValidContentSid,
+  mapTwilioStatus,
+  sendTwilioMessage,
+  toE164,
+} from './twilio-api'
 
 const BUSINESS = '+17863860961'
 
@@ -142,6 +149,39 @@ describe('twilio helpers', () => {
     expect(mapTwilioStatus('delivered')).toBe('delivered')
     expect(mapTwilioStatus('undelivered')).toBe('failed')
     expect(mapTwilioStatus('weird')).toBeNull()
+  })
+
+  it('sends a Content Template with variables instead of a body', async () => {
+    const calls: { url: string; body: string }[] = []
+    const realFetch = globalThis.fetch
+    globalThis.fetch = (async (url: string, init: RequestInit) => {
+      calls.push({ url, body: String(init.body) })
+      return new Response(JSON.stringify({ sid: 'SMabc', status: 'queued' }), { status: 201 })
+    }) as typeof fetch
+    try {
+      const res = await sendTwilioMessage({
+        accountSid: 'AC' + 'a'.repeat(32),
+        authToken: 't',
+        from: '+17863860961',
+        to: '13055550100',
+        body: 'ignored',
+        contentSid: 'HX' + 'b'.repeat(32),
+        contentVariables: { '1': 'Ana', '2': 'Hola' },
+      })
+      expect(res.sid).toBe('SMabc')
+      const form = new URLSearchParams(calls[0].body)
+      expect(form.get('To')).toBe('whatsapp:+13055550100')
+      expect(form.get('ContentSid')).toBe('HX' + 'b'.repeat(32))
+      expect(JSON.parse(form.get('ContentVariables')!)).toEqual({ '1': 'Ana', '2': 'Hola' })
+      expect(form.get('Body')).toBeNull()
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
+
+  it('validates Content SIDs', () => {
+    expect(isValidContentSid('HXf82889b79f3d7e86342e7c2a39bf57d8')).toBe(true)
+    expect(isValidContentSid('HX123')).toBe(false)
   })
 
   it('hashes secrets deterministically', () => {

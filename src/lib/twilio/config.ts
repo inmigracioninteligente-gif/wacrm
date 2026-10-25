@@ -19,6 +19,8 @@ export interface TwilioConfigRow {
   ingest_secret_hash: string;
   status_token: string;
   public_base_url: string | null;
+  /** Approved Twilio Content Template for admin alerts (migration 037). */
+  notify_content_sid?: string | null;
   status: 'connected' | 'disconnected';
 }
 
