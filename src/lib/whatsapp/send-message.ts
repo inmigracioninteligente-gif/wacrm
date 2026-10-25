@@ -36,6 +36,16 @@ import {
   isRecipientNotAllowedError,
 } from '@/lib/whatsapp/phone-utils';
 import type { MessageTemplate } from '@/types';
+import {
+  getTwilioConfigForAccount,
+  statusCallbackUrl,
+  type ResolvedTwilioConfig,
+} from '@/lib/twilio/config';
+import {
+  sendTwilioMessage,
+  TwilioApiError,
+  TWILIO_OUTSIDE_WINDOW_CODE,
+} from '@/lib/twilio/twilio-api';
 import { isMessageTemplate } from '@/lib/whatsapp/template-row-guard';
 
 export const MEDIA_KINDS = ['image', 'video', 'document', 'audio'] as const;
@@ -217,6 +227,22 @@ export async function sendMessageToConversation(
       'Invalid phone number format',
       400
     );
+  }
+
+  // Twilio channel takes precedence: a workspace whose number lives in
+  // Twilio has no whatsapp_config row (or one that isn't used).
+  const twilio = await getTwilioConfigForAccount(supabaseAdmin(), accountId);
+  if (twilio) {
+    return sendViaTwilio(db, accountId, twilio, {
+      conversationId,
+      contactId: contact.id,
+      phone: sanitizedPhone,
+      messageType,
+      contentText: contentText ?? null,
+      mediaUrl: mediaUrl ?? null,
+      templateName: templateName ?? null,
+      replyToMessageId: replyToMessageId ?? null,
+    });
   }
 
   // WhatsApp config, account-scoped.
@@ -420,8 +446,16 @@ export async function sendMessageToConversation(
     })
     .eq('id', conversationId);
 
-  // Pause any active Flow run for this contact — the agent stepping in
-  // is the strongest "yield, human is here" signal. Best-effort.
+  await pauseActiveFlowRuns(accountId, contact.id);
+
+  return { messageId: messageRecord.id, whatsappMessageId: waMessageId };
+}
+
+/**
+ * Pause any active Flow run for this contact — the agent stepping in
+ * is the strongest "yield, human is here" signal. Best-effort.
+ */
+async function pauseActiveFlowRuns(accountId: string, contactId: string) {
   try {
     const { error: pauseErr } = await supabaseAdmin()
       .from('flow_runs')
@@ -431,7 +465,7 @@ export async function sendMessageToConversation(
         end_reason: 'agent_replied',
       })
       .eq('account_id', accountId)
-      .eq('contact_id', contact.id)
+      .eq('contact_id', contactId)
       .eq('status', 'active');
     if (pauseErr) {
       console.error('[flows] pause-on-agent-send failed:', pauseErr.message);
@@ -442,6 +476,96 @@ export async function sendMessageToConversation(
       err instanceof Error ? err.message : err
     );
   }
+}
 
-  return { messageId: messageRecord.id, whatsappMessageId: waMessageId };
+/**
+ * Send through the workspace's Twilio WhatsApp number and persist.
+ * Text and single-media sends only — Meta templates live in Meta, not
+ * Twilio, so they can't be sent from here.
+ */
+async function sendViaTwilio(
+  db: SupabaseClient,
+  accountId: string,
+  twilio: ResolvedTwilioConfig,
+  p: {
+    conversationId: string;
+    contactId: string;
+    phone: string;
+    messageType: string;
+    contentText: string | null;
+    mediaUrl: string | null;
+    templateName: string | null;
+    replyToMessageId: string | null;
+  }
+): Promise<SendMessageResult> {
+  if (p.messageType === 'template') {
+    throw new SendMessageError(
+      'template_unsupported',
+      'Meta templates cannot be sent from a Twilio number. Send a regular message instead (the customer must have written in the last 24 hours).',
+      400
+    );
+  }
+
+  let sid: string;
+  try {
+    const result = await sendTwilioMessage({
+      accountSid: twilio.row.account_sid,
+      authToken: twilio.authToken,
+      from: twilio.row.from_number,
+      to: p.phone,
+      body: p.contentText,
+      mediaUrl: p.messageType === 'text' ? null : p.mediaUrl,
+      statusCallback: statusCallbackUrl(twilio.row),
+    });
+    sid = result.sid;
+  } catch (err) {
+    if (err instanceof TwilioApiError && err.code === TWILIO_OUTSIDE_WINDOW_CODE) {
+      throw new SendMessageError(
+        'outside_window',
+        'This customer last wrote more than 24 hours ago. WhatsApp only allows free-form replies within 24 hours of their last message.',
+        400
+      );
+    }
+    const message = err instanceof Error ? err.message : 'Unknown Twilio error';
+    console.error('[send-message] Twilio send failed:', message);
+    throw new SendMessageError('twilio_error', `Twilio error: ${message}`, 502);
+  }
+
+  const { data: messageRecord, error: msgError } = await db
+    .from('messages')
+    .insert({
+      conversation_id: p.conversationId,
+      sender_type: 'agent',
+      content_type: p.messageType,
+      content_text: p.contentText || null,
+      media_url: p.mediaUrl || null,
+      template_name: null,
+      message_id: sid,
+      status: 'sent',
+      reply_to_message_id: p.replyToMessageId || null,
+    })
+    .select()
+    .single();
+
+  if (msgError) {
+    console.error('[send-message] error inserting Twilio message:', msgError);
+    throw new SendMessageError(
+      'db_error',
+      `Message sent via Twilio but failed to save to DB: ${msgError.message}`,
+      500
+    );
+  }
+
+  await db
+    .from('conversations')
+    .update({
+      last_message_text: p.contentText || `[${p.messageType}]`,
+      last_message_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', p.conversationId);
+
+  await pauseActiveFlowRuns(accountId, p.contactId);
+
+  return { messageId: messageRecord.id, whatsappMessageId: sid };
 }

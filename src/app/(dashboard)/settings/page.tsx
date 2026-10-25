@@ -11,6 +11,7 @@ import { ProfileForm } from '@/components/settings/profile-form';
 import { SecurityPanel } from '@/components/settings/security-panel';
 import { AppearancePanel } from '@/components/settings/appearance-panel';
 import { WhatsAppConfig } from '@/components/settings/whatsapp-config';
+import { TwilioConfig } from '@/components/settings/twilio-config';
 import { NotificationSettings } from '@/components/settings/notification-settings';
 import { TemplateManager } from '@/components/settings/template-manager';
 import { FieldsAndTagsPanel } from '@/components/settings/fields-and-tags-panel';
@@ -56,7 +57,12 @@ export default function SettingsPage() {
     profile: <ProfileForm />,
     security: <SecurityPanel />,
     appearance: <AppearancePanel />,
-    whatsapp: <WhatsAppConfig />,
+    whatsapp: (
+      <div className="space-y-8">
+        <TwilioConfig />
+        <WhatsAppConfig />
+      </div>
+    ),
     notifications: <NotificationSettings />,
     templates: <TemplateManager />,
     fields: <FieldsAndTagsPanel />,

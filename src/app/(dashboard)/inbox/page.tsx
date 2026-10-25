@@ -187,13 +187,25 @@ export default function InboxPage() {
         return;
       }
 
-      const { data } = await supabase
-        .from("whatsapp_config")
-        .select("status")
-        .eq("account_id", accountId)
-        .maybeSingle();
+      const [{ data }, { data: twilio }] = await Promise.all([
+        supabase
+          .from("whatsapp_config")
+          .select("status")
+          .eq("account_id", accountId)
+          .maybeSingle(),
+        // A workspace can run on a Twilio number instead of Meta
+        // (migration 036). Errors (table not migrated yet) read as
+        // "not connected via Twilio".
+        supabase
+          .from("twilio_config")
+          .select("status")
+          .eq("account_id", accountId)
+          .maybeSingle(),
+      ]);
 
-      setWhatsappConnected(data?.status === "connected");
+      setWhatsappConnected(
+        data?.status === "connected" || twilio?.status === "connected",
+      );
     };
 
     checkConnection();
